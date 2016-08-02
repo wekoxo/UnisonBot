@@ -6,11 +6,12 @@ import telegram
 import os
 from storer import Storer
 from user_info import UserInfo, ForumListener
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, Job
 
 POSTS_CHECK_INTERVAL_SEC = 900  # 15 min
 STORED_FILE = os.getenv('UNI_STORED_FILE', 'unison_bot_shelve.db')
 TOKEN_FILENAME = os.getenv('UNI_TOKEN_FILE', 'token.lst')
+KOMSOSTAV_FILENAME = os.getenv('UNI_KOMSOSTAV_FILE', 'komsostav.lst')
 
 # Define the different states a chat can be in
 MENU, AWAIT_INPUT_GAME = range(2)
@@ -38,6 +39,7 @@ def log_params(method_name, update):
 
 def get_description():
     return """/help - Show help
+/start - Start message
 /get_game - Returns a random game from selected partition"""
 
 
@@ -91,21 +93,33 @@ def send_message_with_game(bot, update, category):
     state[chat_id] = MENU
 
 
-def game_from_category(bot, update):
+def game_from_inline_markup(bot, update):
     query = update.callback_query
     game = get_game.get_random_game(query.data)
     bot.editMessageText(text=game, chat_id=query.message.chat_id, message_id=query.message.message_id,
                         parse_mode=telegram.ParseMode.MARKDOWN)
 
 
-def start_forum_subscription(bot, update):
+def start_forum_subscription(bot, update, job_queue):
     telegram_user = update.message.from_user
+    chat_id = update.message.chat_id
     if telegram_user.id not in users:
         users[telegram_user.id] = UserInfo(telegram_user)
-        users[telegram_user.id].set_listener(ForumListener(bot=bot, chat_id=update.message.chat_id))
-        bot.sendMessage(update.message.chat_id, text='Subscription start')
-        log_params('start_forum_subscription', update)
-        storer.store('users', users)
+        #users[telegram_user.id].set_listener(ForumListener(bot=bot, chat_id=update.message.chat_id))
+
+        # Add job to queue
+    job = Job(alarm, users[telegram_user.id].job_posts_timeout, repeat=True, context=chat_id)
+    users[telegram_user.id].job_check_posts = job
+    job_queue.put(job)
+
+    bot.sendMessage(update.message.chat_id, text='Subscription start')
+    log_params('start_forum_subscription', update)
+    storer.store('users', users)
+
+
+def alarm(bot, job):
+    """Function to send the alarm message"""
+    bot.sendMessage(job.context, text='Beep!')
 
 
 def check_new_posts(update):
@@ -119,11 +133,20 @@ def forum_auth(bot, update, args):
     else:
         bot.sendMessage(update.message.chat_id, text='Two arguments required')
 
+
 def read_token():
     f = open(TOKEN_FILENAME)
     token = f.readline().strip()
     f.close()
     return token
+
+
+def read_komsostav():
+    f = open(KOMSOSTAV_FILENAME)
+    commander = f.readline().strip()
+    commissar = f.readline().strip()
+    f.close()
+    return [commander, commissar]
 
 
 def main():
@@ -132,25 +155,25 @@ def main():
     if users is None:
         users = {}
 
-    global job_queue
+    #global job_queue
 
     token = read_token()
     updater = Updater(token)
 
-    job_queue = updater.job_queue
-    job_queue.put(check_new_posts, POSTS_CHECK_INTERVAL_SEC, repeat=True)
+    #job_queue = updater.job_queue
+    #job_queue.put(check_new_posts, POSTS_CHECK_INTERVAL_SEC, repeat=True)
     # Get the dispatcher to register handlers
     dp = updater.dispatcher
 
     # Add handlers for Telegram messages
-    dp.addHandler(CommandHandler("help", bot_help))
-    dp.addHandler(CommandHandler("start", start))
-    dp.addHandler(CommandHandler("get_game", get_games, pass_args=True))
-    dp.addHandler(CommandHandler("start_subscription", start_forum_subscription))
-    dp.addHandler(CallbackQueryHandler(game_from_category))
+    dp.add_handler(CommandHandler("help", bot_help))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("get_game", get_games, pass_args=True))
+    dp.add_handler(CommandHandler("start_subscription", start_forum_subscription, pass_job_queue=True))
+    dp.add_handler(CallbackQueryHandler(game_from_inline_markup))
 
-    game_ans_handler = MessageHandler([Filters.text], get_games)
-    dp.addHandler(game_ans_handler)
+    #game_ans_handler = MessageHandler([Filters.text], get_games)
+    #dp.add_handler(game_ans_handler)
 
     updater.start_polling()
     updater.idle()
