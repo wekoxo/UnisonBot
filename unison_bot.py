@@ -4,24 +4,23 @@ import get_game
 import uni_forum
 import telegram
 import os
+import pytz
+from datetime import datetime
 from storer import Storer
-from user_info import UserInfo, ForumListener
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, Job
+from user_info import UserInfo
+from telegram.ext import Updater, CommandHandler, JobQueue, CallbackQueryHandler, Job
 
-POSTS_CHECK_INTERVAL_SEC = 900  # 15 min
 STORED_FILE = os.getenv('UNI_STORED_FILE', 'unison_bot_shelve.db')
 TOKEN_FILENAME = os.getenv('UNI_TOKEN_FILE', 'token.lst')
 KOMSOSTAV_FILENAME = os.getenv('UNI_KOMSOSTAV_FILE', 'komsostav.lst')
 
-# Define the different states a chat can be in
-MENU, AWAIT_INPUT_GAME = range(2)
-
 users = {}
-storer = Storer(STORED_FILE)
-state = dict()
+users_store = Storer(STORED_FILE)
+forum_subscribers = dict()
+user_chat = dict()
+
 job_queue = None
 
-# Enable Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO)
@@ -57,7 +56,6 @@ def get_games(bot, update, args=None):
     log_params('get_games', update)
     chat_id = update.message.chat_id
     text = update.message.text
-    chat_state = state.get(chat_id, MENU)
 
     if text[0] == '/' and args:
         list_response = get_game.get_games_category()
@@ -70,10 +68,8 @@ def get_games(bot, update, args=None):
         else:
             bot.sendMessage(chat_id, text='Wrong topic')
             game_markup(bot, update)
-            state[chat_id] = AWAIT_INPUT_GAME
     elif text[0] == '/':
         game_markup(bot, update)
-        state[chat_id] = AWAIT_INPUT_GAME
 
 
 def game_markup(bot, update):
@@ -90,7 +86,6 @@ def send_message_with_game(bot, update, category):
     chat_id = update.message.chat_id
     game = get_game.get_random_game(category)
     bot.sendMessage(chat_id, text=game, parse_mode=telegram.ParseMode.MARKDOWN)
-    state[chat_id] = MENU
 
 
 def game_from_inline_markup(bot, update):
@@ -103,28 +98,53 @@ def game_from_inline_markup(bot, update):
 def start_forum_subscription(bot, update, job_queue):
     telegram_user = update.message.from_user
     chat_id = update.message.chat_id
+    if chat_id in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have already subscribed')
+        return
     if telegram_user.id not in users:
         users[telegram_user.id] = UserInfo(telegram_user)
-        #users[telegram_user.id].set_listener(ForumListener(bot=bot, chat_id=update.message.chat_id))
-
-        # Add job to queue
-    job = Job(alarm, users[telegram_user.id].job_posts_timeout, repeat=True, context=chat_id)
-    users[telegram_user.id].job_check_posts = job
-    job_queue.put(job)
-
-    bot.sendMessage(update.message.chat_id, text='Subscription start')
+    users[telegram_user.id].job_check_posts = True
+    add_forum_job(telegram_user.id, job_queue)
+    bot.sendMessage(chat_id, text='Subscription start')
     log_params('start_forum_subscription', update)
-    storer.store('users', users)
+    users_store.store('users', users)
 
 
-def alarm(bot, job):
-    """Function to send the alarm message"""
-    bot.sendMessage(job.context, text='Beep!')
+def add_forum_job(user_id, jobs):
+    user_info = users[user_id]
+    job = Job(check_new_posts_rss, user_info.job_posts_timeout, repeat=True, context=user_id)
+    forum_subscribers[user_id] = job
+    jobs.put(job)
 
 
-def check_new_posts(update):
-    for user in users.values():
-        user.check_new_posts()
+def stop_forum_subscription(bot, update):
+    chat_id = update.message.chat_id
+    telegram_user = update.message.from_user
+    if chat_id not in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have not started subscription')
+        return
+    job = forum_subscribers[chat_id]
+    job.schedule_removal()
+    users[telegram_user.id].job_check_posts = False
+    del forum_subscribers[chat_id]
+    bot.sendMessage(chat_id, text='Subscription stop')
+    log_params('stop_forum_subscription', update)
+    users_store.store('users', users)
+
+
+def check_new_posts_rss(bot, job):
+    user_info = users[job.context]
+    up_time = user_info.last_forum_post_check
+    post_list = uni_forum.get_posts_rss(up_time)
+    users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
+    for post in post_list:
+        msg = ''
+        for item in post:
+            if post.index(item) in {0, 1}:
+                msg += '*' + item + '*' + '\n'
+            else:
+                msg += item + '\n'
+        bot.sendMessage(job.context, text=msg)
 
 
 def forum_auth(bot, update, args):
@@ -150,30 +170,25 @@ def read_komsostav():
 
 
 def main():
-    global users
-    users = storer.restore('users')
-    if users is None:
-        users = {}
-
-    #global job_queue
-
     token = read_token()
     updater = Updater(token)
+    global users
+    users = users_store.restore('users')
+    if users is None:
+        users = {}
+    job_queue = JobQueue(updater.bot)
+    for user_id in users:
+        user_info = users[user_id]
+        if user_info.job_check_posts:
+            add_forum_job(user_info.user.id, job_queue)
 
-    #job_queue = updater.job_queue
-    #job_queue.put(check_new_posts, POSTS_CHECK_INTERVAL_SEC, repeat=True)
-    # Get the dispatcher to register handlers
     dp = updater.dispatcher
-
-    # Add handlers for Telegram messages
     dp.add_handler(CommandHandler("help", bot_help))
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("get_game", get_games, pass_args=True))
     dp.add_handler(CommandHandler("start_subscription", start_forum_subscription, pass_job_queue=True))
+    dp.add_handler(CommandHandler("stop_forum_subscription", stop_forum_subscription))
     dp.add_handler(CallbackQueryHandler(game_from_inline_markup))
-
-    #game_ans_handler = MessageHandler([Filters.text], get_games)
-    #dp.add_handler(game_ans_handler)
 
     updater.start_polling()
     updater.idle()

@@ -1,10 +1,8 @@
 import requests
-import base64
 from bs4 import BeautifulSoup
-import feedparser
 import pytz
 from datetime import datetime
-
+import feedparser
 
 url = "http://forum.spounison.ru"
 
@@ -29,7 +27,7 @@ def get_forum_sections():
     return sections_list
 
 
-def get_posts(up_time):
+def get_posts_rss(up_time):
     post_list = []
     feed = feedparser.parse(url + "/index.php?action=.xml;type=rss")
     for item in feed.entries:
@@ -39,3 +37,5 @@ def get_posts(up_time):
         if post_time_gmt >= up_time:
             post_list.append([item.tags[0].term, item.title_detail.value, item.summary, item.link, item.published])
     return post_list
+
+
