@@ -18,6 +18,9 @@ users = {}
 users_store = Storer(STORED_FILE)
 forum_subscribers = dict()
 user_chat = dict()
+posts_from_forum = []
+last_check_new_posts = 0
+UPDATE_FORUM_TIMEOUT_SEC = 1. * 60  # 10 min
 
 job_queue = None
 
@@ -39,7 +42,9 @@ def log_params(method_name, update):
 def get_description():
     return """/help - Show help
 /start - Start message
-/get_game - Returns a random game from selected partition"""
+/get_game - Returns a random game from selected partition
+/start_subscription - Start subscription on a forum posts
+/stop_subscription - Stop this subscription"""
 
 
 def start(bot, update):
@@ -112,7 +117,7 @@ def start_forum_subscription(bot, update, job_queue):
 
 def add_forum_job(user_id, jobs):
     user_info = users[user_id]
-    job = Job(check_new_posts_rss, user_info.job_posts_timeout, repeat=True, context=user_id)
+    job = Job(check_new_posts_from_list, user_info.job_posts_timeout, repeat=True, context=user_id)
     forum_subscribers[user_id] = job
     jobs.put(job)
 
@@ -132,19 +137,36 @@ def stop_forum_subscription(bot, update):
     users_store.store('users', users)
 
 
-def check_new_posts_rss(bot, job):
+def check_new_posts_from_list(bot, job):
     user_info = users[job.context]
     up_time = user_info.last_forum_post_check
-    post_list = uni_forum.get_posts_rss(up_time)
+    post_list = []
+    for post in posts_from_forum:
+        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z')
+        post_time_gmt = post_time.replace(tzinfo=pytz.timezone('GMT'))
+        if post_time_gmt > up_time:
+            post_list.append(post)
     users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
     for post in post_list:
-        msg = ''
-        msg += '*' + post[5] + ':*' + '\n'
-        msg += '\t*' + post[0] + '*' + '\n'
-        msg += '\t*' + post[1] + '*' + '\n'
-        msg += '\t' + uni_forum.message_process(post[2]) + '\n'
-        msg += '\t' + post[4] + '\n'
-        bot.sendMessage(job.context, text=msg)
+        msg = create_message_from_post(post)
+        bot.sendMessage(job.context, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
+
+
+def check_new_posts_rss(bot, job):
+    global last_check_new_posts
+    post_list = uni_forum.get_posts_rss(last_check_new_posts)
+    posts_from_forum.extend(post_list)
+    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
+
+
+def create_message_from_post(post):
+    msg = ''
+    msg += '*' + post[5] + ':*' + '\n'
+    msg += '\t*' + post[0] + '*' + '\n'
+    msg += '\t*' + post[1] + '*' + '\n'
+    msg += '\t' + uni_forum.message_process(post[2]) + '\n'
+    # msg += '\t' + post[4] + '\n'
+    return msg
 
 
 def forum_auth(bot, update, args):
@@ -170,13 +192,19 @@ def read_komsostav():
 
 
 def main():
+    global last_check_new_posts
+    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
     token = read_token()
     updater = Updater(token)
     global users
     users = users_store.restore('users')
     if users is None:
         users = {}
+    global job_queue
     job_queue = JobQueue(updater.bot)
+    job = Job(check_new_posts_rss, UPDATE_FORUM_TIMEOUT_SEC, repeat=True)
+    job_queue.put(job)
+
     for user_id in users:
         user_info = users[user_id]
         if user_info.job_check_posts:

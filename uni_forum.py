@@ -38,8 +38,10 @@ def get_posts_rss(up_time):
             break
         message_id = item.link[item.link.find('#')+4:]
         soup = BeautifulSoup(s.get(item.link).text, "html5lib")
+        post_text = soup.find('div', {'id': 'msg_' + message_id}, {'class': 'inner'}).text
         author = soup.find('ul', {'id': 'msg_' + message_id + '_extra_info'}).parent.find('a').text
-        post_list.append([item.tags[0].term, item.title_detail.value, item.summary, item.link, item.published, author])
+        post_list.append([item.tags[0].term, item.title_detail.value, item.summary, item.link, item.published, author,
+                          post_text])
     return post_list
 
 
@@ -53,12 +55,29 @@ def message_process(message):
             '<div': '>',
             '</div': '>',
             '<a': '>',
-            '</a': '>'
+            '</a': '>',
+            '<blockquote': '>',
+            '</blockquote': '>',
+            '<span': '>',
+            '</span': '>'
             }
+    idx_tag = message.find('<b>')
+    if idx_tag >= 0:
+        message = message[:idx_tag] + '*' + message[idx_tag + 3:]
+        idx_tag = message.find('</b>')
+        message = message[:idx_tag] + '*' + message[idx_tag + 4:]
+
+    idx_tag = message.find('<i>')
+    if idx_tag >= 0:
+        message = message[:idx_tag] + '_' + message[idx_tag + 3:]
+        idx_tag = message.find('</i>')
+        message = message[:idx_tag] + '_' + message[idx_tag + 4:]
+
     for start_tag in tags:
         idx_start = message.find(start_tag)
-        if idx_start >= 0:
+        while idx_start >= 0:
             finish_tag = tags[start_tag]
             idx_finish = message.find(finish_tag, idx_start)
             message = message[:idx_start] + message[idx_finish + len(finish_tag):]
+            idx_start = message.find(start_tag)
     return message
