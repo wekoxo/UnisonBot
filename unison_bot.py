@@ -2,6 +2,7 @@
 import logging
 import get_game
 import uni_forum
+import init_bot
 import telegram
 import os
 import pytz
@@ -11,13 +12,17 @@ from user_info import UserInfo
 from telegram.ext import Updater, CommandHandler, JobQueue, CallbackQueryHandler, Job
 
 STORED_FILE = os.getenv('UNI_STORED_FILE', 'unison_bot_shelve.db')
-TOKEN_FILENAME = os.getenv('UNI_TOKEN_FILE', 'token.lst')
-KOMSOSTAV_FILENAME = os.getenv('UNI_KOMSOSTAV_FILE', 'komsostav.lst')
+
+MENU, AWAIT_INPUT_GAME, AWAIT_MEETING_ANSWER = range(3)
+state = dict()
 
 users = {}
 users_store = Storer(STORED_FILE)
 forum_subscribers = dict()
-user_chat = dict()
+
+meeting_subscribers = []
+komsostav = []
+
 posts_from_forum = []
 last_check_new_posts = 0
 UPDATE_FORUM_TIMEOUT_SEC = 1. * 60  # 10 min
@@ -43,8 +48,10 @@ def get_description():
     return """/help - Show help
 /start - Start message
 /get_game - Returns a random game from selected partition
-/start_subscription - Start subscription on a forum posts
-/stop_subscription - Stop this subscription"""
+/start_forum_subscription - Start subscription on a forum posts
+/stop_forum_subscription - Stop this subscription
+/start_meeting_subscription - Start subscription on a meetings
+/stop_meeting_subscription - Stop this subscription"""
 
 
 def start(bot, update):
@@ -64,10 +71,7 @@ def get_games(bot, update, args=None):
 
     if text[0] == '/' and args:
         list_response = get_game.get_games_category()
-        category = ''
-        for i in args:
-            category += i + ' '
-        category = category.rstrip()
+        category = ' '.join(args)
         if category in list_response:
             send_message_with_game(bot, update, category)
         else:
@@ -84,6 +88,7 @@ def game_markup(bot, update):
     for item in list_response:
         custom_keyboard.append([telegram.InlineKeyboardButton(item, callback_data=item)])
     reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
+    state[update.message.chat_id] = AWAIT_INPUT_GAME
     bot.sendMessage(chat_id, text='Choose topic', reply_markup=reply_markup)
 
 
@@ -93,8 +98,7 @@ def send_message_with_game(bot, update, category):
     bot.sendMessage(chat_id, text=game, parse_mode=telegram.ParseMode.MARKDOWN)
 
 
-def game_from_inline_markup(bot, update):
-    query = update.callback_query
+def game_from_inline_markup(bot, query):
     game = get_game.get_random_game(query.data)
     bot.editMessageText(text=game, chat_id=query.message.chat_id, message_id=query.message.message_id,
                         parse_mode=telegram.ParseMode.MARKDOWN)
@@ -110,7 +114,7 @@ def start_forum_subscription(bot, update, job_queue):
         users[telegram_user.id] = UserInfo(telegram_user)
     users[telegram_user.id].job_check_posts = True
     add_forum_job(telegram_user.id, job_queue)
-    bot.sendMessage(chat_id, text='Subscription start')
+    bot.sendMessage(chat_id, text='Subscription started')
     log_params('start_forum_subscription', update)
     users_store.store('users', users)
 
@@ -132,7 +136,7 @@ def stop_forum_subscription(bot, update):
     job.schedule_removal()
     users[telegram_user.id].job_check_posts = False
     del forum_subscribers[chat_id]
-    bot.sendMessage(chat_id, text='Subscription stop')
+    bot.sendMessage(chat_id, text='Subscription stopped')
     log_params('stop_forum_subscription', update)
     users_store.store('users', users)
 
@@ -148,7 +152,7 @@ def check_new_posts_from_list(bot, job):
             post_list.append(post)
     users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
     for post in post_list:
-        msg = create_message_from_post(post)
+        msg = uni_forum.create_message_from_post(post)
         bot.sendMessage(job.context, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
 
 
@@ -159,16 +163,6 @@ def check_new_posts_rss(bot, job):
     last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
 
 
-def create_message_from_post(post):
-    msg = ''
-    msg += '*' + post[5] + ':*' + '\n'
-    msg += '\t*' + post[0] + '*' + '\n'
-    msg += '\t*' + post[1] + '*' + '\n'
-    msg += '\t' + uni_forum.message_process(post[2]) + '\n'
-    # msg += '\t' + post[4] + '\n'
-    return msg
-
-
 def forum_auth(bot, update, args):
     if len(args) == 2:
         uni_forum.forum_auth(args[0], args[1])
@@ -176,26 +170,91 @@ def forum_auth(bot, update, args):
         bot.sendMessage(update.message.chat_id, text='Two arguments required')
 
 
-def read_token():
-    f = open(TOKEN_FILENAME)
-    token = f.readline().strip()
-    f.close()
-    return token
+def start_meeting_subscription(bot, update):
+    telegram_user = update.message.from_user
+    chat_id = update.message.chat_id
+    if meeting_subscribers.count(chat_id) != 0:
+        bot.sendMessage(chat_id, text='You have already subscribed on meetings')
+        return
+    if telegram_user.id not in users:
+        users[telegram_user.id] = UserInfo(telegram_user)
+    users[telegram_user.id].check_meetings = True
+    meeting_subscribers.append(chat_id)
+    bot.sendMessage(chat_id, text='Subscription on meeting started')
+    log_params('start_meeting_subscription', update)
+    users_store.store('users', users)
 
 
-def read_komsostav():
-    f = open(KOMSOSTAV_FILENAME)
-    commander = f.readline().strip()
-    commissar = f.readline().strip()
-    f.close()
-    return [commander, commissar]
+def stop_meeting_subscription(bot, update):
+    chat_id = update.message.chat_id
+    telegram_user = update.message.from_user
+    if meeting_subscribers.count(chat_id) == 0:
+        bot.sendMessage(chat_id, text='You have not started subscription on meeting')
+        return
+    users[telegram_user.id].job_check_posts = False
+    meeting_subscribers.remove(chat_id)
+    bot.sendMessage(chat_id, text='Subscription stopped')
+    log_params('stop_meeting_subscription', update)
+    users_store.store('users', users)
+
+
+def create_meeting(bot, update, args=None):
+    chat_id = update.message.chat_id
+    telegram_user = update.message.from_user
+    if komsostav.count(telegram_user.id):
+        bot.sendMessage(chat_id, text="You can't do that")
+    #    return
+    text = update.message.text
+    if text[0] == '/' and args:
+        meeting_description = '*Новый сбор: *\n' + ' '.join(args)
+        for subscriber in meeting_subscribers:
+            custom_keyboard = [[telegram.InlineKeyboardButton('Приду', callback_data='Yes'),
+                                telegram.InlineKeyboardButton('Не приду', callback_data='No')]]
+            reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
+            state[chat_id] = AWAIT_MEETING_ANSWER
+            bot.sendMessage(subscriber, text=meeting_description, reply_markup=reply_markup,
+                            parse_mode=telegram.ParseMode.MARKDOWN)
+    elif text[0] == '/':
+        bot.sendMessage(chat_id, text="Type this command with description of the meeting")
+
+
+def answer_for_meting(bot, query):
+    user = users[query.message.chat_id].user
+    person = user.first_name + ' ' + user.last_name + ' ' + user.name
+    meeting_description = query.message.text[13:]
+    if query.data == 'Yes':
+        bot.editMessageText(text='*Отлично!*\n' + meeting_description, chat_id=query.message.chat_id,
+                            message_id=query.message.message_id, parse_mode=telegram.ParseMode.MARKDOWN)
+        answer_to_komsostav(bot, person, 'придет')
+    if query.data == 'No':
+        bot.editMessageText(text='*Жаль :(*\n' + meeting_description, chat_id=query.message.chat_id,
+                            message_id=query.message.message_id, parse_mode=telegram.ParseMode.MARKDOWN)
+        answer_to_komsostav(bot, person, 'не придет')
+
+
+def answer_to_komsostav(bot, person, answer):
+    for kom in komsostav:
+        bot.sendMessage(kom, text=person + ' ' + answer + ' на сбор.')
+
+
+def callback_query(bot, update):
+    query = update.callback_query
+    if state[query.message.chat_id] == AWAIT_INPUT_GAME:
+        game_from_inline_markup(bot, query)
+    if state[query.message.chat_id] == AWAIT_MEETING_ANSWER:
+        answer_for_meting(bot, query)
+    state[query.message.chat_id] = MENU
 
 
 def main():
     global last_check_new_posts
     last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
-    token = read_token()
+    token = init_bot.read_token()
     updater = Updater(token)
+
+    global komsostav
+    komsostav = init_bot.read_komsostav()
+
     global users
     users = users_store.restore('users')
     if users is None:
@@ -214,9 +273,12 @@ def main():
     dp.add_handler(CommandHandler("help", bot_help))
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("get_game", get_games, pass_args=True))
-    dp.add_handler(CommandHandler("start_subscription", start_forum_subscription, pass_job_queue=True))
+    dp.add_handler(CommandHandler("start_forum_subscription", start_forum_subscription, pass_job_queue=True))
     dp.add_handler(CommandHandler("stop_forum_subscription", stop_forum_subscription))
-    dp.add_handler(CallbackQueryHandler(game_from_inline_markup))
+    dp.add_handler(CommandHandler("start_meeting_subscription", start_meeting_subscription))
+    dp.add_handler(CommandHandler("stop_meeting_subscription", stop_meeting_subscription))
+    dp.add_handler(CommandHandler("create_meeting", create_meeting, pass_args=True))
+    dp.add_handler(CallbackQueryHandler(callback_query))
 
     updater.start_polling()
     updater.idle()

@@ -81,3 +81,12 @@ def message_process(message):
             message = message[:idx_start] + message[idx_finish + len(finish_tag):]
             idx_start = message.find(start_tag)
     return message
+
+def create_message_from_post(post):
+    msg = ''
+    msg += '*' + post[5] + ':*' + '\n'
+    msg += '\t*' + post[0] + '*' + '\n'
+    msg += '\t*' + post[1] + '*' + '\n'
+    msg += '\t' + message_process(post[2]) + '\n'
+    # msg += '\t' + post[4] + '\n'
+    return msg
