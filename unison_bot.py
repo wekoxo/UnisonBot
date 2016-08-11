@@ -139,11 +139,11 @@ def check_new_posts_rss(bot, job):
     users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
     for post in post_list:
         msg = ''
-        for item in post:
-            if post.index(item) in {0, 1}:
-                msg += '*' + item + '*' + '\n'
-            else:
-                msg += item + '\n'
+        msg += '*' + post[5] + ':*' + '\n'
+        msg += '\t*' + post[0] + '*' + '\n'
+        msg += '\t*' + post[1] + '*' + '\n'
+        msg += '\t' + uni_forum.message_process(post[2]) + '\n'
+        msg += '\t' + post[4] + '\n'
         bot.sendMessage(job.context, text=msg)
 
 

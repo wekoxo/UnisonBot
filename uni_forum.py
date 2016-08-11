@@ -62,14 +62,3 @@ def message_process(message):
             idx_finish = message.find(finish_tag, idx_start)
             message = message[:idx_start] + message[idx_finish + len(finish_tag):]
     return message
-
-'''
-    post_list = uni_forum.get_posts_rss(datetime.now(tz=pytz.timezone('GMT')))
-    for post in post_list:
-        msg = ''
-        msg += '*' + post[5] + ':*' + '\n'
-        msg += '\t*' + post[0] + '*' + '\n'
-        msg += '\t*' + post[1] + '*' + '\n'
-        msg += '\t' + uni_forum.message_process(post[2]) + '\n'
-        msg += '\t' + post[4] + '\n'
-'''
