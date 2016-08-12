@@ -29,13 +29,13 @@ def get_forum_sections():
 def get_posts_rss(up_time):
     post_list = []
     feed = feedparser.parse(url + "/index.php?action=.xml;type=rss")
-    s = requests.Session()
     for item in feed.entries:
         temp = item.published_parsed
         post_time = datetime(temp.tm_year, temp.tm_mon, temp.tm_mday, temp.tm_hour, temp.tm_min, temp.tm_sec)
         post_time_gmt = post_time.replace(tzinfo=pytz.timezone('GMT'))
-        if post_time_gmt >= up_time:
+        if post_time_gmt < up_time:
             break
+        s = requests.Session()
         message_id = item.link[item.link.find('#')+4:]
         soup = BeautifulSoup(s.get(item.link).text, "html5lib")
         post_text = soup.find('div', {'id': 'msg_' + message_id}, {'class': 'inner'}).text
@@ -82,11 +82,12 @@ def message_process(message):
             idx_start = message.find(start_tag)
     return message
 
+
 def create_message_from_post(post):
     msg = ''
     msg += '*' + post[5] + ':*' + '\n'
-    msg += '\t*' + post[0] + '*' + '\n'
-    msg += '\t*' + post[1] + '*' + '\n'
-    msg += '\t' + message_process(post[2]) + '\n'
+    msg += '*' + post[0] + '*' + '\n'
+    msg += '*' + post[1] + '*' + '\n'
+    msg += '' + message_process(post[6]) + '\n'
     # msg += '\t' + post[4] + '\n'
     return msg

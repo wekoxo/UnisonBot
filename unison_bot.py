@@ -25,7 +25,7 @@ komsostav = []
 
 posts_from_forum = []
 last_check_new_posts = 0
-UPDATE_FORUM_TIMEOUT_SEC = 1. * 60  # 10 min
+UPDATE_FORUM_TIMEOUT_SEC = 10. * 60  # 10 min
 
 job_queue = None
 
@@ -178,6 +178,7 @@ def start_meeting_subscription(bot, update):
         return
     if telegram_user.id not in users:
         users[telegram_user.id] = UserInfo(telegram_user)
+        state[chat_id] = MENU
     users[telegram_user.id].check_meetings = True
     meeting_subscribers.append(chat_id)
     bot.sendMessage(chat_id, text='Subscription on meeting started')
@@ -211,7 +212,7 @@ def create_meeting(bot, update, args=None):
             custom_keyboard = [[telegram.InlineKeyboardButton('Приду', callback_data='Yes'),
                                 telegram.InlineKeyboardButton('Не приду', callback_data='No')]]
             reply_markup = telegram.InlineKeyboardMarkup(custom_keyboard)
-            state[chat_id] = AWAIT_MEETING_ANSWER
+            state[subscriber] = AWAIT_MEETING_ANSWER
             bot.sendMessage(subscriber, text=meeting_description, reply_markup=reply_markup,
                             parse_mode=telegram.ParseMode.MARKDOWN)
     elif text[0] == '/':
