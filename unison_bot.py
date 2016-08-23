@@ -6,7 +6,7 @@ import init_bot
 import telegram
 import os
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 from storer import Storer
 from user_info import UserInfo
 from telegram.ext import Updater, CommandHandler, JobQueue, CallbackQueryHandler, Job
@@ -25,7 +25,8 @@ komsostav = []
 
 posts_from_forum = []
 last_check_new_posts = 0
-UPDATE_FORUM_TIMEOUT_SEC = 10. * 60  # 10 min
+UPDATE_FORUM_POSTS_TIMEOUT_SEC = 10. * 60
+DEL_FORUM_POSTS_TIMEOUT_SEC = 24 * 60. * 60
 
 job_queue = None
 
@@ -126,16 +127,44 @@ def add_forum_job(user_id, jobs):
     jobs.put(job)
 
 
+def del_forum_job(user_id):
+    job = forum_subscribers[user_id]
+    job.schedule_removal()
+    del forum_subscribers[user_id]
+
+
+def change_forum_delay(bot, update, job_queue, args=None):
+    telegram_user = update.message.from_user
+    chat_id = update.message.chat_id
+    if chat_id not in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have not active subscription')
+        return
+    if not args:
+        bot.sendMessage(chat_id, text='Please write delay (in minutes) for the update')
+        return
+    try:
+        delay = int(' '.join(args))
+    except:
+        bot.sendMessage(chat_id, text='Wrong format of number. It must be integer')
+        return
+    if delay < 10 or delay > 24*60:
+        bot.sendMessage(chat_id, text='Delay must be less than 24 hours and more than 10 minutes')
+        return
+    del_forum_job(telegram_user.id)
+    users[telegram_user.id].job_posts_timeout = delay * 60
+    add_forum_job(telegram_user.id, job_queue)
+    bot.sendMessage(chat_id, text='Success! Update delay to ' + str(delay) + ' minutes.')
+    users_store.store('users', users)
+
+
 def stop_forum_subscription(bot, update):
     chat_id = update.message.chat_id
     telegram_user = update.message.from_user
     if chat_id not in forum_subscribers:
         bot.sendMessage(chat_id, text='You have not started subscription')
         return
-    job = forum_subscribers[chat_id]
-    job.schedule_removal()
+    del_forum_job(chat_id)
     users[telegram_user.id].job_check_posts = False
-    del forum_subscribers[chat_id]
     bot.sendMessage(chat_id, text='Subscription stopped')
     log_params('stop_forum_subscription', update)
     users_store.store('users', users)
@@ -154,6 +183,22 @@ def check_new_posts_from_list(bot, job):
     for post in post_list:
         msg = uni_forum.create_message_from_post(post)
         bot.sendMessage(job.context, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
+    users_store.store('users', users)
+
+
+def del_posts_from_list(bot, job):
+    now_time = datetime.now(tz=pytz.timezone('GMT'))
+    i = 0
+    while True:
+        posts_list_len = len(posts_from_forum)
+        if i == posts_list_len:
+            break
+        post = posts_from_forum[i]
+        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z').replace(tzinfo=pytz.timezone('GMT'))
+        if now_time - post_time >= timedelta(days=1):
+            posts_from_forum.remove(post)
+        else:
+            i += 1
 
 
 def check_new_posts_rss(bot, job):
@@ -248,8 +293,6 @@ def callback_query(bot, update):
 
 
 def main():
-    global last_check_new_posts
-    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
     token = init_bot.read_token()
     updater = Updater(token)
 
@@ -260,15 +303,28 @@ def main():
     users = users_store.restore('users')
     if users is None:
         users = {}
+
+    global last_check_new_posts
+    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
+    for user_id in users:
+        user_info = users[user_id]
+        if user_info.last_forum_post_check < last_check_new_posts:
+            last_check_new_posts = user_info.last_forum_post_check
+
     global job_queue
     job_queue = JobQueue(updater.bot)
-    job = Job(check_new_posts_rss, UPDATE_FORUM_TIMEOUT_SEC, repeat=True)
+    job = Job(check_new_posts_rss, UPDATE_FORUM_POSTS_TIMEOUT_SEC, repeat=True)
+    check_new_posts_rss(updater.bot, job)
     job_queue.put(job)
+    job_del_posts = Job(del_posts_from_list, DEL_FORUM_POSTS_TIMEOUT_SEC, repeat=True)
+    job_queue.put(job_del_posts)
 
     for user_id in users:
         user_info = users[user_id]
         if user_info.job_check_posts:
             add_forum_job(user_info.user.id, job_queue)
+        if user_info.check_meetings:
+            meeting_subscribers.append(user_info.user.id)
 
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("help", bot_help))
@@ -279,6 +335,7 @@ def main():
     dp.add_handler(CommandHandler("start_meeting_subscription", start_meeting_subscription))
     dp.add_handler(CommandHandler("stop_meeting_subscription", stop_meeting_subscription))
     dp.add_handler(CommandHandler("create_meeting", create_meeting, pass_args=True))
+    dp.add_handler(CommandHandler("change_update_delay", change_forum_delay, pass_args=True, pass_job_queue=True))
     dp.add_handler(CallbackQueryHandler(callback_query))
 
     updater.start_polling()

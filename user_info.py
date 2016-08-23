@@ -2,7 +2,7 @@ import logging
 import pytz
 from datetime import datetime
 
-UPDATE_TIMEOUT_SEC = 10. * 60  # 10 min
+UPDATE_TIMEOUT_SEC = 60. * 60
 logger = logging.getLogger(__name__)
 
 
