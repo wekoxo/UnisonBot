@@ -9,7 +9,7 @@ import pytz
 from datetime import datetime, timedelta
 from storer import Storer
 from user_info import UserInfo
-from telegram.ext import Updater, CommandHandler, JobQueue, CallbackQueryHandler, Job
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, Job
 
 STORED_FILE = os.getenv('UNI_STORED_FILE', 'unison_bot_shelve.db')
 
@@ -25,10 +25,8 @@ komsostav = []
 
 posts_from_forum = []
 last_check_new_posts = 0
-UPDATE_FORUM_POSTS_TIMEOUT_SEC = 10. * 60
+UPDATE_FORUM_POSTS_TIMEOUT_SEC = 1. * 60
 DEL_FORUM_POSTS_TIMEOUT_SEC = 24 * 60. * 60
-
-job_queue = None
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -103,116 +101,6 @@ def game_from_inline_markup(bot, query):
     game = get_game.get_random_game(query.data)
     bot.editMessageText(text=game, chat_id=query.message.chat_id, message_id=query.message.message_id,
                         parse_mode=telegram.ParseMode.MARKDOWN)
-
-
-def start_forum_subscription(bot, update, job_queue):
-    telegram_user = update.message.from_user
-    chat_id = update.message.chat_id
-    if chat_id in forum_subscribers:
-        bot.sendMessage(chat_id, text='You have already subscribed')
-        return
-    if telegram_user.id not in users:
-        users[telegram_user.id] = UserInfo(telegram_user)
-    users[telegram_user.id].job_check_posts = True
-    add_forum_job(telegram_user.id, job_queue)
-    bot.sendMessage(chat_id, text='Subscription started')
-    log_params('start_forum_subscription', update)
-    users_store.store('users', users)
-
-
-def add_forum_job(user_id, jobs):
-    user_info = users[user_id]
-    job = Job(check_new_posts_from_list, user_info.job_posts_timeout, repeat=True, context=user_id)
-    forum_subscribers[user_id] = job
-    jobs.put(job)
-
-
-def del_forum_job(user_id):
-    job = forum_subscribers[user_id]
-    job.schedule_removal()
-    del forum_subscribers[user_id]
-
-
-def change_forum_delay(bot, update, job_queue, args=None):
-    telegram_user = update.message.from_user
-    chat_id = update.message.chat_id
-    if chat_id not in forum_subscribers:
-        bot.sendMessage(chat_id, text='You have not active subscription')
-        return
-    if not args:
-        bot.sendMessage(chat_id, text='Please write delay (in minutes) for the update')
-        return
-    try:
-        delay = int(' '.join(args))
-    except:
-        bot.sendMessage(chat_id, text='Wrong format of number. It must be integer')
-        return
-    if delay < 10 or delay > 24*60:
-        bot.sendMessage(chat_id, text='Delay must be less than 24 hours and more than 10 minutes')
-        return
-    del_forum_job(telegram_user.id)
-    users[telegram_user.id].job_posts_timeout = delay * 60
-    add_forum_job(telegram_user.id, job_queue)
-    bot.sendMessage(chat_id, text='Success! Update delay to ' + str(delay) + ' minutes.')
-    users_store.store('users', users)
-
-
-def stop_forum_subscription(bot, update):
-    chat_id = update.message.chat_id
-    telegram_user = update.message.from_user
-    if chat_id not in forum_subscribers:
-        bot.sendMessage(chat_id, text='You have not started subscription')
-        return
-    del_forum_job(chat_id)
-    users[telegram_user.id].job_check_posts = False
-    bot.sendMessage(chat_id, text='Subscription stopped')
-    log_params('stop_forum_subscription', update)
-    users_store.store('users', users)
-
-
-def check_new_posts_from_list(bot, job):
-    user_info = users[job.context]
-    up_time = user_info.last_forum_post_check
-    post_list = []
-    for post in posts_from_forum:
-        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z')
-        post_time_gmt = post_time.replace(tzinfo=pytz.timezone('GMT'))
-        if post_time_gmt > up_time:
-            post_list.append(post)
-    users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
-    for post in post_list:
-        msg = uni_forum.create_message_from_post(post)
-        bot.sendMessage(job.context, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
-    users_store.store('users', users)
-
-
-def del_posts_from_list(bot, job):
-    now_time = datetime.now(tz=pytz.timezone('GMT'))
-    i = 0
-    while True:
-        posts_list_len = len(posts_from_forum)
-        if i == posts_list_len:
-            break
-        post = posts_from_forum[i]
-        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z').replace(tzinfo=pytz.timezone('GMT'))
-        if now_time - post_time >= timedelta(days=1):
-            posts_from_forum.remove(post)
-        else:
-            i += 1
-
-
-def check_new_posts_rss(bot, job):
-    global last_check_new_posts
-    post_list = uni_forum.get_posts_rss(last_check_new_posts)
-    posts_from_forum.extend(post_list)
-    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
-
-
-def forum_auth(bot, update, args):
-    if len(args) == 2:
-        uni_forum.forum_auth(args[0], args[1])
-    else:
-        bot.sendMessage(update.message.chat_id, text='Two arguments required')
 
 
 def start_meeting_subscription(bot, update):
@@ -292,6 +180,120 @@ def callback_query(bot, update):
     state[query.message.chat_id] = MENU
 
 
+def start_forum_subscription(bot, update, job_queue):
+    telegram_user = update.message.from_user
+    chat_id = update.message.chat_id
+    if chat_id in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have already subscribed')
+        return
+    if telegram_user.id not in users:
+        users[telegram_user.id] = UserInfo(telegram_user)
+    users[telegram_user.id].job_check_posts = True
+    add_forum_job(telegram_user.id, job_queue)
+    bot.sendMessage(chat_id, text='Subscription started')
+    log_params('start_forum_subscription', update)
+    users_store.store('users', users)
+
+
+def add_forum_job(user_id, job_queue):
+    user_info = users[user_id]
+    job = Job(check_new_posts_from_list, user_info.job_posts_timeout, repeat=True, context=user_id)
+    forum_subscribers[user_id] = job
+    job_queue.put(job)
+
+
+def del_forum_job(user_id):
+    job = forum_subscribers[user_id]
+    job.schedule_removal()
+    del forum_subscribers[user_id]
+
+
+def change_forum_delay(bot, update, args=None):
+    telegram_user = update.message.from_user
+    chat_id = update.message.chat_id
+    if chat_id not in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have not active subscription')
+        return
+    if not args:
+        bot.sendMessage(chat_id, text='Please write delay (in minutes) for the update')
+        return
+    try:
+        delay = int(' '.join(args))
+    except:
+        bot.sendMessage(chat_id, text='Wrong format of number. It must be integer')
+        return
+    if delay < 1 or delay > 24*60:
+        bot.sendMessage(chat_id, text='Delay must be less than 24 hours and more than 10 minutes')
+        return
+    job = forum_subscribers[telegram_user.id]
+    job.interval = delay * 60
+    users[telegram_user.id].job_posts_timeout = delay * 60
+    bot.sendMessage(chat_id, text='Success! Update delay to ' + str(delay) + ' minutes.')
+    users_store.store('users', users)
+
+
+def stop_forum_subscription(bot, update):
+    chat_id = update.message.chat_id
+    telegram_user = update.message.from_user
+    if chat_id not in forum_subscribers:
+        bot.sendMessage(chat_id, text='You have not started subscription')
+        return
+    del_forum_job(chat_id)
+    users[telegram_user.id].job_check_posts = False
+    bot.sendMessage(chat_id, text='Subscription stopped')
+    log_params('stop_forum_subscription', update)
+    users_store.store('users', users)
+
+
+def check_new_posts_from_list(bot, job):
+    user_info = users[job.context]
+    up_time = user_info.last_forum_post_check
+    post_list = []
+    is_message_send = False
+    for post in posts_from_forum:
+        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z')
+        post_time_gmt = post_time.replace(tzinfo=pytz.timezone('GMT'))
+        if post_time_gmt > up_time:
+            post_list.append(post)
+    for post in post_list:
+        msg = uni_forum.create_message_from_post(post)
+        bot.sendMessage(job.context, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
+        is_message_send = True
+    if is_message_send:
+        users[job.context].last_forum_post_check = datetime.now(tz=pytz.timezone('GMT'))
+        users_store.store('users', users)
+
+
+def del_posts_from_list(bot, job):
+    now_time = datetime.now(tz=pytz.timezone('GMT'))
+    i = 0
+    while True:
+        posts_list_len = len(posts_from_forum)
+        if i == posts_list_len:
+            break
+        post = posts_from_forum[i]
+        post_time = datetime.strptime(post[4], '%a, %d %b %Y %H:%M:%S %Z').replace(tzinfo=pytz.timezone('GMT'))
+        if now_time - post_time >= timedelta(days=1):
+            posts_from_forum.remove(post)
+        else:
+            i += 1
+
+
+def check_new_posts_rss(bot, job):
+    global last_check_new_posts
+    global posts_from_forum
+    post_list = uni_forum.get_posts_rss(last_check_new_posts)
+    posts_from_forum.extend(post_list)
+    last_check_new_posts = datetime.now(tz=pytz.timezone('GMT'))
+
+
+def forum_auth(bot, update, args):
+    if len(args) == 2:
+        uni_forum.forum_auth(args[0], args[1])
+    else:
+        bot.sendMessage(update.message.chat_id, text='Two arguments required')
+
+
 def main():
     token = init_bot.read_token()
     updater = Updater(token)
@@ -311,8 +313,7 @@ def main():
         if user_info.last_forum_post_check < last_check_new_posts:
             last_check_new_posts = user_info.last_forum_post_check
 
-    global job_queue
-    job_queue = JobQueue(updater.bot)
+    job_queue = updater.job_queue
     job = Job(check_new_posts_rss, UPDATE_FORUM_POSTS_TIMEOUT_SEC, repeat=True)
     check_new_posts_rss(updater.bot, job)
     job_queue.put(job)
@@ -335,7 +336,7 @@ def main():
     dp.add_handler(CommandHandler("start_meeting_subscription", start_meeting_subscription))
     dp.add_handler(CommandHandler("stop_meeting_subscription", stop_meeting_subscription))
     dp.add_handler(CommandHandler("create_meeting", create_meeting, pass_args=True))
-    dp.add_handler(CommandHandler("change_update_delay", change_forum_delay, pass_args=True, pass_job_queue=True))
+    dp.add_handler(CommandHandler("change_update_delay", change_forum_delay, pass_args=True))
     dp.add_handler(CallbackQueryHandler(callback_query))
 
     updater.start_polling()
