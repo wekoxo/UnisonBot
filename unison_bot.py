@@ -138,9 +138,10 @@ def create_meeting(bot, update, args=None):
     telegram_user = update.message.from_user
     if komsostav.count(telegram_user.id):
         bot.sendMessage(chat_id, text="You can't do that")
-    #    return
+        return
     text = update.message.text
     if text[0] == '/' and args:
+        bot.sendMessage(chat_id, text="Done! New meeting created!")
         meeting_description = '*Новый сбор: *\n' + ' '.join(args)
         for subscriber in meeting_subscribers:
             custom_keyboard = [[telegram.InlineKeyboardButton('Приду', callback_data='Yes'),
