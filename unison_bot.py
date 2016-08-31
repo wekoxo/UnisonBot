@@ -25,7 +25,7 @@ komsostav = []
 
 posts_from_forum = []
 last_check_new_posts = 0
-UPDATE_FORUM_POSTS_TIMEOUT_SEC = 1. * 60
+UPDATE_FORUM_POSTS_TIMEOUT_SEC = 10. * 60
 DEL_FORUM_POSTS_TIMEOUT_SEC = 24 * 60. * 60
 
 logging.basicConfig(
@@ -49,6 +49,7 @@ def get_description():
 /get_game - Returns a random game from selected partition
 /start_forum_subscription - Start subscription on a forum posts
 /stop_forum_subscription - Stop this subscription
+/change_update_delay - Change delay for checking new posts
 /start_meeting_subscription - Start subscription on a meetings
 /stop_meeting_subscription - Stop this subscription"""
 
@@ -222,7 +223,7 @@ def change_forum_delay(bot, update, args=None):
     except:
         bot.sendMessage(chat_id, text='Wrong format of number. It must be integer')
         return
-    if delay < 1 or delay > 24*60:
+    if delay < 10 or delay > 24*60:
         bot.sendMessage(chat_id, text='Delay must be less than 24 hours and more than 10 minutes')
         return
     job = forum_subscribers[telegram_user.id]
